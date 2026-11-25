@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Optimizador de Horarios — Grafos N-Partitos</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="topbar">
+    <div>
+        <h1>Optimizador de Horarios Universitarios</h1>
+        <p>Grafo N-Partito Ponderado G = (V, E, w) · Forward Checking + MRV · Base de Datos Local & Excel</p>
+    </div>
+    <div class="header-actions">
+        <input type="file" id="inputExcel" accept=".xlsx" hidden>
+        <button type="button" id="btnSubirExcel" class="btn btn-secondary" onclick="document.getElementById('inputExcel').click()">📂 Cargar Excel (.xlsx)</button>
+        <a href="/api/horarios/plantilla-excel" class="btn btn-secondary" style="text-decoration:none; display:inline-flex; align-items:center;">📥 Plantilla</a>
+        <button id="btnAbrirModalBD" class="btn btn-secondary">+ Registrar Curso</button>
+        <button id="btnOptimizar" class="btn btn-primary">Generar Horario y Grafo</button>
+    </div>
+</header>
+
+<main class="layout">
+    <!-- Panel Izquierdo: Parámetros, Mis Cursos Elegidos, Filtro por Ciclo y Buscador -->
+    <section class="panel-config">
+        <div class="card">
+            <div class="row-between">
+                <h2>1. Parámetros de Matrícula</h2>
+                <span id="resumenCreditos" class="badge-info">0 / 22 créd.</span>
+            </div>
+            <div class="form-row">
+                <label>Créditos Máx (C<sub>max</sub>):
+                    <input type="number" id="creditosMax" value="22" min="1" max="40">
+                </label>
+                <label>Top K Horarios:
+                    <input type="number" id="topK" value="5" min="1" max="15">
+                </label>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>2. Mis Cursos Seleccionados</h2>
+            <p class="hint">Aquí aparecen los cursos que elegiste (de uno o varios ciclos). Presiona <strong>"Secciones"</strong> para priorizar.</p>
+            <div id="cursosSeleccionadosResumen" class="catalogo-compacto"></div>
+        </div>
+
+        <div class="card">
+            <h2>3. Explorar Catálogo por Ciclo o Búsqueda</h2>
+            <p class="hint">Elige un ciclo o busca por nombre/código para añadir cursos de otros ciclos.</p>
+            <div class="form-row" style="margin-bottom: 0.75rem;">
+                <select id="selectCiclo">
+                    <option value="">-- Elegir Ciclo --</option>
+                </select>
+                <input type="text" id="buscadorCursos" placeholder="🔍 Buscar curso (cualquier ciclo)...">
+            </div>
+            <div id="listaCatalogoCursos" class="catalogo-compacto"></div>
+        </div>
+    </section>
+
+    <!-- Panel Derecho: Métricas, Pestañas (Horario / Grafo N-Partito) -->
+    <section class="panel-resultados">
+        <div id="alertaError" class="alert-error hidden"></div>
+
+        <div class="metrics-grid">
+            <div class="metric-card">
+                <span class="metric-label">Clique Máximo &omega;(G)</span>
+                <strong id="metOmega" class="metric-value">-</strong>
+            </div>
+            <div class="metric-card">
+                <span class="metric-label">Densidad N-Partita (&rho;)</span>
+                <strong id="metDensidad" class="metric-value">-</strong>
+            </div>
+            <div class="metric-card">
+                <span class="metric-label">Poda Forward Checking</span>
+                <strong id="metPoda" class="metric-value">-</strong>
+            </div>
+            <div class="metric-card">
+                <span class="metric-label">Tiempo CPU</span>
+                <strong id="metTiempo" class="metric-value">-</strong>
+            </div>
+        </div>
+
+        <div class="card view-switcher">
+            <div class="view-tabs">
+                <button id="tabVistaHorario" class="view-btn active">📅 Horario Óptimo (Grilla)</button>
+                <button id="tabVistaGrafo" class="view-btn">🕸️ Grafo N-Partito G=(V,E,w)</button>
+            </div>
+            <div id="controlesRanking" class="ranking-inline">
+                <span>Ranking K*:</span>
+                <div id="tabsSoluciones" class="tabs-container"></div>
+            </div>
+        </div>
+
+        <!-- Vista 1: Grilla Horaria -->
+        <div id="vistaHorario" class="card">
+            <div id="detalleAptitud" class="aptitud-banner">Selecciona tus cursos a la izquierda y presiona "Generar Horario y Grafo".</div>
+            <div class="calendar-wrapper">
+                <div id="grillaSemanal" class="schedule-grid"></div>
+            </div>
+        </div>
+
+        <!-- Vista 2: Grafo N-Partito Interactivo (SVG) -->
+        <div id="vistaGrafo" class="card hidden">
+            <div class="grafo-legend">
+                <span><i class="dot dot-clique"></i> Arista y Vértice del Clique Óptimo K*</span>
+                <span><i class="dot dot-edge"></i> Arista de Compatibilidad H(u)&cap;H(v)=&emptyset;</span>
+                <span>Cada columna vertical representa una partición independiente V<sub>i</sub></span>
+            </div>
+            <div class="svg-container">
+                <svg id="svgGrafo" width="100%" height="520" viewBox="0 0 960 520"></svg>
+            </div>
+        </div>
+    </section>
+</main>
+
+<!-- VENTANA FLOTANTE (MODAL) PARA ELEGIR Y ORDENAR SECCIONES DE UN CURSO -->
+<div id="modalSecciones" class="modal hidden">
+    <div class="modal-content modal-secciones-box">
+        <div class="row-between">
+            <div>
+                <h2 id="tituloModalSecciones" style="margin-bottom:2px;">Secciones del Curso</h2>
+                <p class="hint" style="margin-bottom:0;">Marca las secciones aceptables y arrastra (<strong>☰</strong>) de arriba hacia abajo según tu prioridad.</p>
+            </div>
+            <button id="btnCerrarModalSecciones" class="btn btn-small">✕</button>
+        </div>
+        <hr style="margin: 0.75rem 0; border-color: #e2e8f0;">
+        <ul id="listaModalSecciones" class="seccion-list"></ul>
+        <div style="margin-top: 1rem; display: flex; justify-content: flex-end;">
+            <button id="btnConfirmarSecciones" class="btn btn-primary">Listo · Guardar Prioridades</button>
+        </div>
+    </div>
+</div>
+
+<!-- Modal para insertar nuevos cursos manualmente en BD Local -->
+<div id="modalBD" class="modal hidden">
+    <div class="modal-content">
+        <div class="row-between">
+            <h2>Registrar Nuevo Curso en Base de Datos</h2>
+            <button id="btnCerrarModal" class="btn btn-small">✕</button>
+        </div>
+        <div class="form-grid">
+            <input type="text" id="bdCiclo" placeholder="Ciclo (ej. Ciclo V)" value="Ciclo V">
+            <input type="text" id="bdCodigo" placeholder="Código (ej. FIS201)">
+            <input type="text" id="bdNombre" placeholder="Nombre del curso">
+            <input type="number" id="bdCreditos" value="4" min="1" max="10" placeholder="Créditos">
+        </div>
+        <hr style="margin: 0.75rem 0; border-color: #e2e8f0;">
+        <div class="form-grid">
+            <input type="text" id="bdSecCodigo" placeholder="Sección (ej. A)">
+            <input type="text" id="bdSecDocente" placeholder="Profesor">
+        </div>
+        <div class="bloque-builder">
+            <select id="bdDia">
+                <option value="1">Lunes</option><option value="2">Martes</option>
+                <option value="3">Miércoles</option><option value="4">Jueves</option>
+                <option value="5">Viernes</option><option value="6">Sábado</option>
+            </select>
+            <input type="time" id="bdInicio" value="10:00">
+            <input type="time" id="bdFin" value="12:00">
+            <button id="btnBdAddBloque" class="btn btn-small">+ Bloque</button>
+        </div>
+        <ul id="bdListaBloques" class="chips-list"></ul>
+        <button id="btnBdAddSeccion" class="btn btn-outline full-width" style="margin-bottom:0.5rem;">+ Añadir Sección al Curso</button>
+        <div id="bdResumenSecciones" class="hint"></div>
+        <button id="btnGuardarEnBD" class="btn btn-primary full-width">Guardar Curso en Base de Datos</button>
+    </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
